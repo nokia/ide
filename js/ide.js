@@ -1,5 +1,8 @@
-var defaultUrl = localStorageGetItem("api-url") || "https://ce.judge0.com";
+var SERVER_NAME = "SERVER_NAME_HERE";
+var defaultUrl = `http://localhost:8888/` ||
+  localStorageGetItem("api-url");
 var apiUrl = defaultUrl;
+var tpmManagerUrl = `https://${SERVER_NAME}.usable-tpm.site:4004`;
 var wait = localStorageGetItem("wait") || true;
 var check_timeout = 300;
 
@@ -26,12 +29,15 @@ var $compilerOptions;
 var $commandLineArguments;
 var $insertTemplateBtn;
 var $runBtn;
-var $navigationMessage;
+var $rebootBtn;
+var $resetBtn;
 var $updates;
 var $statusLine;
 
 var timeStart;
 var timeEnd;
+
+var defaultLanguageId = 2001;
 
 var messagesData;
 
@@ -60,21 +66,30 @@ var layoutConfig = {
             type: "stack",
             content: [{
                 type: "component",
-                componentName: "stdin",
-                id: "stdin",
-                title: "Input",
-                isClosable: false,
-                componentState: {
-                    readOnly: false
-                }
-            }, {
-                type: "component",
                 componentName: "stdout",
                 id: "stdout",
                 title: "Output",
                 isClosable: false,
                 componentState: {
                     readOnly: true
+                }
+            }, {
+                type: "component",
+                componentName: "stderr",
+                id: "stderr",
+                title: "STDERR",
+                isClosable: false,
+                componentState: {
+                    readOnly: true
+                }
+            }, {
+                type: "component",
+                componentName: "compile output",
+                id: "compileoutput",
+                title: "COMPILE OUTPUT",
+                isClosable: false,
+                componentState: {
+                  readOnly: true,
                 }
             }]
         }]
@@ -107,44 +122,6 @@ function localStorageGetItem(key) {
   } catch (ignorable) {
     return null;
   }
-}
-
-function showMessages() {
-    var width = $updates.offset().left - parseFloat($updates.css("padding-left")) -
-                $navigationMessage.parent().offset().left - parseFloat($navigationMessage.parent().css("padding-left")) - 5;
-
-    if (width < 200 || messagesData === undefined) {
-        return;
-    }
-
-    var messages = messagesData["messages"];
-
-    $navigationMessage.css("animation-duration", messagesData["duration"]);
-    $navigationMessage.parent().width(width - 5);
-
-    var combinedMessage = "";
-    for (var i = 0; i < messages.length; ++i) {
-        combinedMessage += `${messages[i]}`;
-        if (i != messages.length - 1) {
-            combinedMessage += "&nbsp".repeat(Math.min(200, messages[i].length));
-        }
-    }
-
-    $navigationMessage.html(combinedMessage);
-}
-
-function loadMessages() {
-    $.ajax({
-        url: `https://minio.judge0.com/public/ide/messages.json?${Date.now()}`,
-        type: "GET",
-        headers: {
-            "Accept": "application/json"
-        },
-        success: function (data, textStatus, jqXHR) {
-            messagesData = data;
-            showMessages();
-        }
-    });
 }
 
 function showError(title, content) {
@@ -233,6 +210,34 @@ function loadSavedSource() {
     }
 }
 
+function rebootTPM() {
+  $rebootBtn.addClass("loading");
+  console.log("Rebooting the TPM");
+  $.ajax({
+    url: `${tpmManagerUrl}/restart_tpm`,
+    type: "POST",
+    success: function (data, textStatus, jqXHR) {
+      console.log("Your TPM was rebooted");
+      $rebootBtn.removeClass("loading");
+    },
+    error: handleRebootError,
+  });
+}
+
+function resetTPM() {
+  $resetBtn.addClass("loading");
+  console.log("Resetting the TPM");
+  $.ajax({
+    url: `${tpmManagerUrl}/reset_tpm`,
+    type: "POST",
+    success: function (data, textStatus, jqXHR) {
+      console.log("Your TPM was reset");
+      $resetBtn.removeClass("loading");
+    },
+    error: handleResetError,
+  });
+}
+
 function run() {
     if (sourceEditor.getValue().trim() === "") {
         showError("Error", "Source code can't be empty!");
@@ -248,7 +253,7 @@ function run() {
     var x = layout.root.getItemsById("stdout")[0];
     x.parent.header.parent.setActiveContentItem(x);
 
-    var sourceValue = encode(sourceEditor.getValue());
+    var sourceValue = encode(sourceEditor.getValue().replaceAll("\r", ""));
     var stdinValue = encode(stdinEditor.getValue());
     var languageId = resolveLanguageId($selectLanguage.val());
     var compilerOptions = $compilerOptions.val();
@@ -268,6 +273,14 @@ function run() {
     };
 
     var sendRequest = function(data) {
+        const params = new URLSearchParams(window.location.search);
+
+        // ! Temporary hack to get what task we are in.
+        if (params.has("task")) {
+        const task = params.get("task");
+        data["task"] = task;
+        }
+
         timeStart = performance.now();
         $.ajax({
             url: apiUrl + `/submissions?base64_encoded=true&wait=${wait}`,
@@ -354,8 +367,7 @@ function loadRandomLanguage() {
         values.push($selectLanguage[0].options[i].value);
     }
     // $selectLanguage.dropdown("set selected", values[Math.floor(Math.random() * $selectLanguage[0].length)]);
-    $selectLanguage.dropdown("set selected", values[19]);
-    apiUrl = resolveApiUrl($selectLanguage.val())
+    $selectLanguage.dropdown("set selected", values[46]);
     insertTemplate();
 }
 
@@ -398,11 +410,6 @@ function resolveLanguageId(id) {
     return languageIdTable[id] || id;
 }
 
-function resolveApiUrl(id) {
-    id = parseInt(id);
-    return languageApiUrlTable[id] || defaultUrl;
-}
-
 function editorsUpdateFontSize(fontSize) {
     sourceEditor.updateOptions({fontSize: fontSize});
     stdinEditor.updateOptions({fontSize: fontSize});
@@ -424,8 +431,6 @@ $(window).resize(function() {
 
 $(document).ready(function () {
     updateScreenElements();
-
-    console.log("Hey, Judge0 IDE is open-sourced: https://github.com/judge0/ide. Have fun!");
 
     $selectLanguage = $("#select-language");
     $selectLanguage.change(function (e) {
@@ -452,8 +457,14 @@ $(document).ready(function () {
         run();
     });
 
-    $navigationMessage = $("#navigation-message span");
-    $updates = $("#judge0-more");
+    $rebootBtn = $("#reboot-btn");
+    $rebootBtn.click(function (e) {
+      rebootTPM();
+    });
+     $resetBtn = $("#reset-btn");
+    $resetBtn.click(function (e) {
+      resetTPM();
+    });
 
     $(`input[name="editor-mode"][value="${editorMode}"]`).prop("checked", true);
     $("input[name=\"editor-mode\"]").on("change", function(e) {
@@ -506,8 +517,6 @@ $(document).ready(function () {
     $(".message .close").on("click", function () {
         $(this).closest(".message").transition("fade");
     });
-
-    loadMessages();
 
     require(["vs/editor/editor.main", "monaco-vim", "monaco-emacs"], function (ignorable, MVim, MEmacs) {
         layout = new GoldenLayout(layoutConfig, $("#site-content"));
@@ -587,764 +596,324 @@ $(document).ready(function () {
 });
 
 // Template Sources
-var assemblySource = "\
-section	.text\n\
-    global _start\n\
-\n\
-_start:\n\
-\n\
-    xor	eax, eax\n\
-    lea	edx, [rax+len]\n\
-    mov	al, 1\n\
-    mov	esi, msg\n\
-    mov	edi, eax\n\
-    syscall\n\
-\n\
-    xor	edi, edi\n\
-    lea	eax, [rdi+60]\n\
-    syscall\n\
-\n\
-section	.rodata\n\
-\n\
-msg	db 'hello, world', 0xa\n\
-len	equ	$ - msg\n\
-";
+var bashSource = '\
+echo "hello, world"\n\
+';
 
-var bashSource = "echo \"hello, world\"";
-
-var basicSource = "PRINT \"hello, world\"";
-
-var cSource = "\
-// Powered by Judge0\n\
+var cSource =
+  '\
 #include <stdio.h>\n\
 \n\
 int main(void) {\n\
-    printf(\"Hello Judge0!\\n\");\n\
+    printf("hello, world\\n");\n\
     return 0;\n\
 }\n\
-";
+';
 
-var csharpSource = "\
-public class Hello {\n\
-    public static void Main() {\n\
-        System.Console.WriteLine(\"hello, world\");\n\
-    }\n\
-}\n\
-";
-
-var cppSource = "\
+var cppSource =
+  '\
 #include <iostream>\n\
 \n\
 int main() {\n\
-    std::cout << \"hello, world\" << std::endl;\n\
+    std::cout << "hello, world" << std::endl;\n\
     return 0;\n\
 }\n\
-";
+';
 
-var competitiveProgrammingSource = "\
-#include <algorithm>\n\
-#include <cstdint>\n\
-#include <iostream>\n\
-#include <limits>\n\
-#include <set>\n\
-#include <utility>\n\
-#include <vector>\n\
-\n\
-using Vertex    = std::uint16_t;\n\
-using Cost      = std::uint16_t;\n\
-using Edge      = std::pair< Vertex, Cost >;\n\
-using Graph     = std::vector< std::vector< Edge > >;\n\
-using CostTable = std::vector< std::uint64_t >;\n\
-\n\
-constexpr auto kInfiniteCost{ std::numeric_limits< CostTable::value_type >::max() };\n\
-\n\
-auto dijkstra( Vertex const start, Vertex const end, Graph const & graph, CostTable & costTable )\n\
-{\n\
-    std::fill( costTable.begin(), costTable.end(), kInfiniteCost );\n\
-    costTable[ start ] = 0;\n\
-\n\
-    std::set< std::pair< CostTable::value_type, Vertex > > minHeap;\n\
-    minHeap.emplace( 0, start );\n\
-\n\
-    while ( !minHeap.empty() )\n\
-    {\n\
-        auto const vertexCost{ minHeap.begin()->first  };\n\
-        auto const vertex    { minHeap.begin()->second };\n\
-\n\
-        minHeap.erase( minHeap.begin() );\n\
-\n\
-        if ( vertex == end )\n\
-        {\n\
-            break;\n\
-        }\n\
-\n\
-        for ( auto const & neighbourEdge : graph[ vertex ] )\n\
-        {\n\
-            auto const & neighbour{ neighbourEdge.first };\n\
-            auto const & cost{ neighbourEdge.second };\n\
-\n\
-            if ( costTable[ neighbour ] > vertexCost + cost )\n\
-            {\n\
-                minHeap.erase( { costTable[ neighbour ], neighbour } );\n\
-                costTable[ neighbour ] = vertexCost + cost;\n\
-                minHeap.emplace( costTable[ neighbour ], neighbour );\n\
-            }\n\
-        }\n\
-    }\n\
-\n\
-    return costTable[ end ];\n\
-}\n\
-\n\
-int main()\n\
-{\n\
-    constexpr std::uint16_t maxVertices{ 10000 };\n\
-\n\
-    Graph     graph    ( maxVertices );\n\
-    CostTable costTable( maxVertices );\n\
-\n\
-    std::uint16_t testCases;\n\
-    std::cin >> testCases;\n\
-\n\
-    while ( testCases-- > 0 )\n\
-    {\n\
-        for ( auto i{ 0 }; i < maxVertices; ++i )\n\
-        {\n\
-            graph[ i ].clear();\n\
-        }\n\
-\n\
-        std::uint16_t numberOfVertices;\n\
-        std::uint16_t numberOfEdges;\n\
-\n\
-        std::cin >> numberOfVertices >> numberOfEdges;\n\
-\n\
-        for ( auto i{ 0 }; i < numberOfEdges; ++i )\n\
-        {\n\
-            Vertex from;\n\
-            Vertex to;\n\
-            Cost   cost;\n\
-\n\
-            std::cin >> from >> to >> cost;\n\
-            graph[ from ].emplace_back( to, cost );\n\
-        }\n\
-\n\
-        Vertex start;\n\
-        Vertex end;\n\
-\n\
-        std::cin >> start >> end;\n\
-\n\
-        auto const result{ dijkstra( start, end, graph, costTable ) };\n\
-\n\
-        if ( result == kInfiniteCost )\n\
-        {\n\
-            std::cout << \"NO\\n\";\n\
-        }\n\
-        else\n\
-        {\n\
-            std::cout << result << '\\n';\n\
-        }\n\
-    }\n\
-\n\
-    return 0;\n\
-}\n\
-";
-
-var clojureSource = "(println \"hello, world\")\n";
-
-var cobolSource = "\
-IDENTIFICATION DIVISION.\n\
-PROGRAM-ID. MAIN.\n\
-PROCEDURE DIVISION.\n\
-DISPLAY \"hello, world\".\n\
-STOP RUN.\n\
-";
-
-var lispSource = "(write-line \"hello, world\")";
-
-var dSource = "\
-import std.stdio;\n\
-\n\
-void main()\n\
-{\n\
-    writeln(\"hello, world\");\n\
-}\n\
-";
-
-var elixirSource = "IO.puts \"hello, world\"";
-
-var erlangSource = "\
-main(_) ->\n\
-    io:fwrite(\"hello, world\\n\").\n\
-";
-
-var executableSource = "\
-Judge0 IDE assumes that content of executable is Base64 encoded.\n\
-\n\
-This means that you should Base64 encode content of your binary,\n\
-paste it here and click \"Run\".\n\
-\n\
-Here is an example of compiled \"hello, world\" NASM program.\n\
-Content of compiled binary is Base64 encoded and used as source code.\n\
-\n\
-https://ide.judge0.com/?kS_f\n\
-";
-
-var fsharpSource = "printfn \"hello, world\"\n";
-
-var fortranSource = "\
-program main\n\
-    print *, \"hello, world\"\n\
-end\n\
-";
-
-var goSource = "\
+var goSource =
+  '\
 package main\n\
 \n\
-import \"fmt\"\n\
+import "fmt"\n\
 \n\
 func main() {\n\
-    fmt.Println(\"hello, world\")\n\
+    fmt.Println("hello, world")\n\
 }\n\
-";
+';
 
-var groovySource = "println \"hello, world\"\n";
+var tpm2toolsSource =
+  '\
+echo -e "Example: Get 20 random bytes from the TPM using tpm2-tools"\n\
+tpm2_getrandom 20\n\
+';
 
-var haskellSource = "main = putStrLn \"hello, world\"";
-
-var javaSource = "\
-public class Main {\n\
-    public static void main(String[] args) {\n\
-        System.out.println(\"hello, world\");\n\
+var tpm2tssSource =
+  '\
+#include <stdio.h>\n\
+#include <tss2/tss2_mu.h>\n\
+#include <tss2/tss2_esys.h>\n\
+\n\
+\n\
+static void getRandom(int size) {\n\
+    TSS2_RC r;\n\
+\n\
+    // Initialize the ESAPI context\n\
+    ESYS_CONTEXT *ctx;\n\
+    r = Esys_Initialize(&ctx, NULL, NULL);\n\
+\n\
+    if (r != TSS2_RC_SUCCESS){\n\
+        printf("\\nError: Esys_Initialize\\n");\n\
+        exit(1);\n\
     }\n\
+\n\
+    // Get random data\n\
+    TPM2B_DIGEST *random_bytes;\n\
+    r = Esys_GetRandom(ctx, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, size, &random_bytes);\n\
+\n\
+    if (r != TSS2_RC_SUCCESS){\n\
+        printf("\\nError: Esys_GetRandom\\n");\n\
+        exit(1);\n\
+    }\n\
+    for (int i = 0; i < random_bytes->size; i++) {\n\
+        printf("0x%x ", random_bytes->buffer[i]);\n\
+    }\n\
+\n\
 }\n\
-";
-
-var javaScriptSource = "console.log(\"hello, world\");";
-
-var kotlinSource = "\
-fun main() {\n\
-    println(\"hello, world\")\n\
-}\n\
-";
-
-var luaSource = "print(\"hello, world\")";
-
-var objectiveCSource = "\
-#import <Foundation/Foundation.h>\n\
 \n\
 int main() {\n\
-    @autoreleasepool {\n\
-        char name[10];\n\
-        scanf(\"%s\", name);\n\
-        NSString *message = [NSString stringWithFormat:@\"hello, %s\\n\", name];\n\
-        printf(\"%s\", message.UTF8String);\n\
-    }\n\
+    printf("Example: Get 20 random bytes from the TPM using tpm2-tss\\n");\n\
+    getRandom(20);\n\
     return 0;\n\
 }\n\
-";
+';
 
-var ocamlSource = "print_endline \"hello, world\"";
+var ibmtssCmdLineSource =
+  '\
+echo -e "Example: Get 20 random bytes from the TPM using IBM TSS"\n\
+tssgetrandom -by 20\n\
+';
 
-var octaveSource = "printf(\"hello, world\\n\");";
-
-var pascalSource = "\
-program Hello;\n\
-begin\n\
-    writeln ('hello, world')\n\
-end.\n\
-";
-
-var perlSource = "\
-my $name = <STDIN>;\n\
-print \"hello, $name\";\n\
-";
-
-var phpSource = "\
-<?php\n\
-print(\"hello, world\\n\");\n\
-?>\n\
-";
-
-var plainTextSource = "hello, world\n";
-
-var prologSource = "\
-:- initialization(main).\n\
-main :- write('hello, world\\n').\n\
-";
-
-var pythonSource = "print(\"hello, world\")";
-
-var rSource = "cat(\"hello, world\\n\")";
-
-var rubySource = "puts \"hello, world\"";
-
-var rustSource = "\
-fn main() {\n\
-    println!(\"hello, world\");\n\
-}\n\
-";
-
-var scalaSource = "\
-object Main {\n\
-    def main(args: Array[String]) = {\n\
-        val name = scala.io.StdIn.readLine()\n\
-        println(\"hello, \"+ name)\n\
-    }\n\
-}\n\
-";
-
-var sqliteSource = "\
--- On Judge0 IDE your SQL script is run on chinook database (https://www.sqlitetutorial.net/sqlite-sample-database).\n\
--- For more information about how to use SQL with Judge0 API please\n\
--- watch this asciicast: https://asciinema.org/a/326975.\n\
-SELECT\n\
-    Name, COUNT(*) AS num_albums\n\
-FROM artists JOIN albums\n\
-ON albums.ArtistID = artists.ArtistID\n\
-GROUP BY Name\n\
-ORDER BY num_albums DESC\n\
-LIMIT 4;\n\
-";
-var sqliteAdditionalFiles = "";
-
-var swiftSource = "\
-import Foundation\n\
-let name = readLine()\n\
-print(\"hello, \\(name!)\")\n\
-";
-
-var typescriptSource = "console.log(\"hello, world\");";
-
-var vbSource = "\
-Public Module Program\n\
-   Public Sub Main()\n\
-      Console.WriteLine(\"hello, world\")\n\
-   End Sub\n\
-End Module\n\
-";
-
-var c3Source = "\
-// On the Judge0 IDE, C3 is automatically\n\
-// updated every hour to the latest commit on master branch.\n\
-module main;\n\
-\n\
-extern func void printf(char *str, ...);\n\
-\n\
-func int main()\n\
-{\n\
-    printf(\"hello, world\\n\");\n\
-    return 0;\n\
-}\n\
-";
-
-var javaTestSource = "\
-import static org.junit.jupiter.api.Assertions.assertEquals;\n\
-\n\
-import org.junit.jupiter.api.Test;\n\
-\n\
-class MainTest {\n\
-    static class Calculator {\n\
-        public int add(int x, int y) {\n\
-            return x + y;\n\
-        }\n\
-    }\n\
-\n\
-    private final Calculator calculator = new Calculator();\n\
-\n\
-    @Test\n\
-    void addition() {\n\
-        assertEquals(2, calculator.add(1, 1));\n\
-    }\n\
-}\n\
-";
-
-var mpiccSource = "\
-// Try adding \"-n 5\" (without quotes) into command line arguments. \n\
-#include <mpi.h>\n\
-\n\
+var ibmtssSource =
+  '\
 #include <stdio.h>\n\
+#include <ibmtss/tss.h>\n\
 \n\
-int main()\n\
-{\n\
-    MPI_Init(NULL, NULL);\n\
+static void getRandom(int size) {\n\
+    TPM_RC rc = 0;\n\
+    TSS_CONTEXT	*tssContext = NULL;\n\
+    GetRandom_In in;\n\
+    GetRandom_Out out;\n\
+    TPMI_SH_AUTH_SESSION sessionHandle0 = TPM_RH_NULL;\n\
+    unsigned int sessionAttributes0 = 0;\n\
+    TPMI_SH_AUTH_SESSION sessionHandle1 = TPM_RH_NULL;\n\
+    unsigned int sessionAttributes1 = 0;\n\
+    TPMI_SH_AUTH_SESSION sessionHandle2 = TPM_RH_NULL;\n\
+    unsigned int sessionAttributes2 = 0;\n\
 \n\
-    int world_size;\n\
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);\n\
+    // Set the amount of requested bytes\n\
+    in.bytesRequested = size;\n\
 \n\
-    int world_rank;\n\
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);\n\
+    // Create a tss context\n\
+    rc = TSS_Create(&tssContext);\n\
 \n\
-    printf(\"Hello from processor with rank %d out of %d processors.\\n\", world_rank, world_size);\n\
+    // Execute GetRandom command\n\
+    rc = TSS_Execute(tssContext, (RESPONSE_PARAMETERS *)&out,\n\
+        (COMMAND_PARAMETERS *)&in, NULL, TPM_CC_GetRandom, sessionHandle0, NULL,\n\
+        sessionAttributes0, sessionHandle1, NULL, sessionAttributes1,\n\
+        sessionHandle2, NULL, sessionAttributes2, TPM_RH_NULL, NULL, 0);\n\
 \n\
-    MPI_Finalize();\n\
+    // Print the random bytes\n\
+    TSS_PrintAll("randomBytes", out.randomBytes.t.buffer, size);\n\
 \n\
+}\n\
+\n\
+int main(void) {\n\
+    printf("Example: Get 20 random bytes from the TPM using IBMTSS\\n");\n\
+    getRandom(20);\n\
     return 0;\n\
 }\n\
-";
+';
 
-var mpicxxSource = "\
-// Try adding \"-n 5\" (without quotes) into command line arguments. \n\
-#include <mpi.h>\n\
+var goTpmToolsSource =
+  '\
+gotpm --help\n\
+echo -e ""\n\
+echo -e "Example: Get 20 random bytes from the TPM using gotpm from go-tpm-tools"\n\
+gotpm read pcr --pcrs 0,1,2,3 --hash-algo sha256\n\
+';
+
+var goTpmSource =
+  '\
+// Gets 20 random bytes from the TPM at /dev/tpm0\n\
+package main\n\
 \n\
-#include <iostream>\n\
+import (\n\
+	"fmt"\n\
+	"os"\n\
 \n\
-int main()\n\
+	"github.com/google/go-tpm/tpm2"\n\
+)\n\
+\n\
+func getRandom(path string, bytes uint16) ([]byte, error) {\n\
+	rwc, err := tpm2.OpenTPM(path)\n\
+	if err != nil {\n\
+		return nil, fmt.Errorf("can\'t open TPM at %q: %v", path, err)\n\
+	}\n\
+	defer rwc.Close()\n\
+	return tpm2.GetRandom(rwc, bytes)\n\
+}\n\
+\n\
+var (\n\
+    tpmPath string = "/dev/tpm0"\n\
+    bytes uint16 = 20\n\
+)\n\
+\n\
+func main() {\n\
+	val, err := getRandom(tpmPath, bytes)\n\
+	if err != nil {\n\
+		fmt.Fprintf(os.Stderr, "getting random bytes from TPM: %v\\n", err)\n\
+		os.Exit(1)\n\
+	}\n\
+	fmt.Printf("Random bytes from the TPM:\\n%x\\n", val)\n\
+}\n\
+';
+
+var wolfTPMCmdLineSource =
+  '\
+echo -n "Example: wrap_test script from wolfTPM"\n\
+./wolfTPM/examples/wrap/wrap_test\n\
+';
+
+var wolfTPMSource =
+  '\
+#include <stdio.h>\n\
+#include <wolftpm/tpm2.h>\n\
+#include <wolftpm/tpm2_wrap.h>\n\
+\n\
+// Set TPM2_IoCb to NULL because we are using the TPM in /dev/tpm0\n\
+#define TPM2_IoCb NULL\n\
+\n\
+static void wrapGetRandom(int size)\n\
 {\n\
-    MPI_Init(NULL, NULL);\n\
+    int rc;\n\
+    WOLFTPM2_DEV dev;\n\
+    WOLFTPM2_BUFFER rngData;\n\
+    rngData.size = size;\n\
 \n\
-    int world_size;\n\
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);\n\
+    // Initialize TPM device\n\
+    rc = wolfTPM2_Init(&dev, TPM2_IoCb, NULL);\n\
+    // Get random bytes\n\
+    rc = wolfTPM2_GetRandom(&dev, rngData.buffer, rngData.size);\n\
 \n\
-    int world_rank;\n\
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);\n\
+    // Print bytes\n\
+    for (int i=0; i < rngData.size; ++i) {\n\
+        printf("%x", rngData.buffer[i]);\n\
+    }\n\
 \n\
-    std::cout << \"Hello from processor with rank \"\n\
-              << world_rank << \" out of \" << world_size << \" processors.\\n\";\n\
+    // Cleanup\n\
+    wolfTPM2_Cleanup(&dev);\n\
+}\n\
 \n\
-    MPI_Finalize();\n\
+static void nativeGetRandom(int size) {\n\
+    int rc;\n\
+    WOLFTPM2_DEV dev;\n\
+    union {\n\
+        GetRandom_In getRand;\n\
+    } cmdIn;\n\
+    union {\n\
+        GetRandom_Out getRand;\n\
+    } cmdOut;\n\
 \n\
+    XMEMSET(&cmdIn.getRand, 0, sizeof(cmdIn.getRand));\n\
+\n\
+    cmdIn.getRand.bytesRequested = size;\n\
+\n\
+    // Initialize TPM device\n\
+    rc = wolfTPM2_Init(&dev, TPM2_IoCb, NULL);\n\
+    // Get random bytes\n\
+    rc = TPM2_GetRandom(&cmdIn.getRand, &cmdOut.getRand);\n\
+\n\
+    // Print bytes\n\
+    for (int i=0; i < size; ++i) {\n\
+        printf("%x", cmdOut.getRand.randomBytes.buffer[i]);\n\
+    }\n\
+\n\
+    // Cleanup\n\
+    wolfTPM2_Cleanup(&dev);\n\
+\n\
+}\n\
+\n\
+\n\
+int main(void) {\n\
+    printf("Example: Get 20 random bytes from the TPM using wolfTPM\'s wrap API\\n");\n\
+    wrapGetRandom(20);\n\
+    printf("\\n");\n\
+    printf("Example: Get 20 random bytes from the TPM using wolfTPM\'s native API\\n");\n\
+    nativeGetRandom(20);\n\
     return 0;\n\
 }\n\
-";
+';
 
-var mpipySource = "\
-# Try adding \"-n 5\" (without quotes) into command line arguments. \n\
-from mpi4py import MPI\n\
-\n\
-comm = MPI.COMM_WORLD\n\
-world_size = comm.Get_size()\n\
-world_rank = comm.Get_rank()\n\
-\n\
-print(f\"Hello from processor with rank {world_rank} out of {world_size} processors\")\n\
-";
-
-var nimSource = "\
-# On the Judge0 IDE, Nim is automatically\n\
-# updated every day to the latest stable version.\n\
-echo \"hello, world\"\n\
-";
-
-var pythonForMlSource = "\
-import mlxtend\n\
-import numpy\n\
-import pandas\n\
-import scipy\n\
-import sklearn\n\
-\n\
-print(\"hello, world\")\n\
-";
-
-var bosqueSource = "\
-// On the Judge0 IDE, Bosque (https://github.com/microsoft/BosqueLanguage)\n\
-// is automatically updated every hour to the latest commit on master branch.\n\
-\n\
-namespace NSMain;\n\
-\n\
-concept WithName {\n\
-    invariant $name != \"\";\n\
-\n\
-    field name: String;\n\
-}\n\
-\n\
-concept Greeting {\n\
-    abstract method sayHello(): String;\n\
-    \n\
-    virtual method sayGoodbye(): String {\n\
-        return \"goodbye\";\n\
-    }\n\
-}\n\
-\n\
-entity GenericGreeting provides Greeting {\n\
-    const instance: GenericGreeting = GenericGreeting@{};\n\
-\n\
-    override method sayHello(): String {\n\
-        return \"hello world\";\n\
-    }\n\
-}\n\
-\n\
-entity NamedGreeting provides WithName, Greeting {\n\
-    override method sayHello(): String {\n\
-        return String::concat(\"hello\", \" \", this.name);\n\
-    }\n\
-}\n\
-\n\
-entrypoint function main(arg?: String): String {\n\
-    var val = arg ?| \"\";\n\
-    if (val == \"1\") {\n\
-        return GenericGreeting@{}.sayHello();\n\
-    }\n\
-    elif (val == \"2\") {\n\
-        return GenericGreeting::instance.sayHello();\n\
-    }\n\
-    else {\n\
-        return NamedGreeting@{name=\"bob\"}.sayHello();\n\
-    }\n\
-}\n\
-";
-
-var cppTestSource = "\
-#include <gtest/gtest.h>\n\
-\n\
-int add(int x, int y) {\n\
-    return x + y;\n\
-}\n\
-\n\
-TEST(AdditionTest, NeutralElement) {\n\
-    EXPECT_EQ(1, add(1, 0));\n\
-    EXPECT_EQ(1, add(0, 1));\n\
-    EXPECT_EQ(0, add(0, 0));\n\
-}\n\
-\n\
-TEST(AdditionTest, CommutativeProperty) {\n\
-    EXPECT_EQ(add(2, 3), add(3, 2));\n\
-}\n\
-\n\
-int main(int argc, char **argv) {\n\
-    ::testing::InitGoogleTest(&argc, argv);\n\
-    return RUN_ALL_TESTS();\n\
-}\n\
-";
-
-var csharpTestSource ="\
-using NUnit.Framework;\n\
-\n\
-public class Calculator\n\
-{\n\
-    public int add(int a, int b)\n\
-    {\n\
-        return a + b;\n\
-    }\n\
-}\n\
-\n\
-[TestFixture]\n\
-public class Tests\n\
-{\n\
-    private Calculator calculator;\n\
-\n\
-    [SetUp]\n\
-    protected void SetUp()\n\
-    {\n\
-        calculator = new Calculator();\n\
-    }\n\
-\n\
-    [Test]\n\
-    public void NeutralElement()\n\
-    {\n\
-        Assert.AreEqual(1, calculator.add(1, 0));\n\
-        Assert.AreEqual(1, calculator.add(0, 1));\n\
-        Assert.AreEqual(0, calculator.add(0, 0));\n\
-    }\n\
-\n\
-    [Test]\n\
-    public void CommutativeProperty()\n\
-    {\n\
-        Assert.AreEqual(calculator.add(2, 3), calculator.add(3, 2));\n\
-    }\n\
-}\n\
-";
+var pythonSource = 'print("hello, world")';
 
 var sources = {
-    45: assemblySource,
-    46: bashSource,
-    47: basicSource,
-    48: cSource,
-    49: cSource,
-    50: cSource,
-    51: csharpSource,
-    52: cppSource,
-    53: cppSource,
-    54: competitiveProgrammingSource,
-    55: lispSource,
-    56: dSource,
-    57: elixirSource,
-    58: erlangSource,
-    44: executableSource,
-    59: fortranSource,
-    60: goSource,
-    61: haskellSource,
-    62: javaSource,
-    63: javaScriptSource,
-    64: luaSource,
-    65: ocamlSource,
-    66: octaveSource,
-    67: pascalSource,
-    68: phpSource,
-    43: plainTextSource,
-    69: prologSource,
-    70: pythonSource,
-    71: pythonSource,
-    72: rubySource,
-    73: rustSource,
-    74: typescriptSource,
-    75: cSource,
-    76: cppSource,
-    77: cobolSource,
-    78: kotlinSource,
-    79: objectiveCSource,
-    80: rSource,
-    81: scalaSource,
-    82: sqliteSource,
-    83: swiftSource,
-    84: vbSource,
-    85: perlSource,
-    86: clojureSource,
-    87: fsharpSource,
-    88: groovySource,
-    1001: cSource,
-    1002: cppSource,
-    1003: c3Source,
-    1004: javaSource,
-    1005: javaTestSource,
-    1006: mpiccSource,
-    1007: mpicxxSource,
-    1008: mpipySource,
-    1009: nimSource,
-    1010: pythonForMlSource,
-    1011: bosqueSource,
-    1012: cppTestSource,
-    1013: cSource,
-    1014: cppSource,
-    1015: cppTestSource,
-    1021: csharpSource,
-    1022: csharpSource,
-    1023: csharpTestSource,
-    1024: fsharpSource
+  46: bashSource,
+  48: cSource,
+  49: cSource,
+  50: cSource,
+  52: cppSource,
+  53: cppSource,
+  54: cppSource,
+  60: goSource,
+  70: pythonSource,
+  71: pythonSource,
+  75: cSource,
+  76: cppSource,
+  1001: cSource,
+  1002: cppSource,
+  2001: tpm2toolsSource, // tpm2-tools
+  2002: tpm2tssSource, // tpm2-tss
+  2003: ibmtssCmdLineSource, // ibmtss (bash)
+  2004: ibmtssSource, // ibmtss (C)
+  2005: goTpmToolsSource, // go-tpm-tools
+  2006: goTpmSource, // go-tpm
+  2008: wolfTPMCmdLineSource, // WolfTPM (bash)
+  2009: wolfTPMSource, // WolfTPM (C)
 };
 
 var fileNames = {
-    45: "main.asm",
-    46: "script.sh",
-    47: "main.bas",
-    48: "main.c",
-    49: "main.c",
-    50: "main.c",
-    51: "Main.cs",
-    52: "main.cpp",
-    53: "main.cpp",
-    54: "main.cpp",
-    55: "script.lisp",
-    56: "main.d",
-    57: "script.exs",
-    58: "main.erl",
-    44: "a.out",
-    59: "main.f90",
-    60: "main.go",
-    61: "main.hs",
-    62: "Main.java",
-    63: "script.js",
-    64: "script.lua",
-    65: "main.ml",
-    66: "script.m",
-    67: "main.pas",
-    68: "script.php",
-    43: "text.txt",
-    69: "main.pro",
-    70: "script.py",
-    71: "script.py",
-    72: "script.rb",
-    73: "main.rs",
-    74: "script.ts",
-    75: "main.c",
-    76: "main.cpp",
-    77: "main.cob",
-    78: "Main.kt",
-    79: "main.m",
-    80: "script.r",
-    81: "Main.scala",
-    82: "script.sql",
-    83: "Main.swift",
-    84: "Main.vb",
-    85: "script.pl",
-    86: "main.clj",
-    87: "script.fsx",
-    88: "script.groovy",
-    1001: "main.c",
-    1002: "main.cpp",
-    1003: "main.c3",
-    1004: "Main.java",
-    1005: "MainTest.java",
-    1006: "main.c",
-    1007: "main.cpp",
-    1008: "script.py",
-    1009: "main.nim",
-    1010: "script.py",
-    1011: "main.bsq",
-    1012: "main.cpp",
-    1013: "main.c",
-    1014: "main.cpp",
-    1015: "main.cpp",
-    1021: "Main.cs",
-    1022: "Main.cs",
-    1023: "Test.cs",
-    1024: "script.fsx"
+  46: "script.sh",
+  48: "main.c",
+  49: "main.c",
+  50: "main.c",
+  52: "main.cpp",
+  53: "main.cpp",
+  54: "main.cpp",
+  60: "main.go",
+  70: "script.py",
+  71: "script.py",
+  75: "main.c",
+  76: "main.cpp",
+  1001: "main.c",
+  1002: "main.cpp",
+  2001: "script.sh", // tpm2-tools
+  2002: "main.c", // tpm2-tss
+  2003: "script.sh", // ibmtss (bash)
+  2004: "main.c", // ibmtss (C)
+  2005: "script.sh", // go-tpm-tools
+  2006: "main.go", // go-tpm
+  2008: "script.sh", // WolfTPM (bash)
+  2009: "main.c", // WolfTPM (C)
 };
 
 var languageIdTable = {
-    1001: 1,
-    1002: 2,
-    1003: 3,
-    1004: 4,
-    1005: 5,
-    1006: 6,
-    1007: 7,
-    1008: 8,
-    1009: 9,
-    1010: 10,
-    1011: 11,
-    1012: 12,
-    1013: 13,
-    1014: 14,
-    1015: 15,
-    1021: 21,
-    1022: 22,
-    1023: 23,
-    1024: 24
-}
-
-var extraApiUrl = "https://extra-ce.judge0.com";
-var languageApiUrlTable = {
-    1001: extraApiUrl,
-    1002: extraApiUrl,
-    1003: extraApiUrl,
-    1004: extraApiUrl,
-    1005: extraApiUrl,
-    1006: extraApiUrl,
-    1007: extraApiUrl,
-    1008: extraApiUrl,
-    1009: extraApiUrl,
-    1010: extraApiUrl,
-    1011: extraApiUrl,
-    1012: extraApiUrl,
-    1013: extraApiUrl,
-    1014: extraApiUrl,
-    1015: extraApiUrl,
-    1021: extraApiUrl,
-    1022: extraApiUrl,
-    1023: extraApiUrl,
-    1024: extraApiUrl
-}
-
-var competitiveProgrammingInput = "\
-3\n\
-3 2\n\
-1 2 5\n\
-2 3 7\n\
-1 3\n\
-3 3\n\
-1 2 4\n\
-1 3 7\n\
-2 3 1\n\
-1 3\n\
-3 1\n\
-1 2 4\n\
-1 3\n\
-";
-
-var inputs = {
-    54: competitiveProgrammingInput
-}
-
-var competitiveProgrammingCompilerOptions = "-O3 --std=c++17 -Wall -Wextra -Wold-style-cast -Wuseless-cast -Wnull-dereference -Werror -Wfatal-errors -pedantic -pedantic-errors";
-
-var compilerOptions = {
-    54: competitiveProgrammingCompilerOptions
-}
+  1001: 1,
+  1002: 2,
+  1003: 3,
+  1004: 4,
+  1005: 5,
+  1006: 6,
+  1007: 7,
+  1008: 8,
+  1009: 9,
+  1010: 10,
+  1011: 11,
+  2001: 46, // tpm2-tools
+  2002: 91, // tpm2-tss
+  2003: 46, // ibmtss (bash)
+  2004: 92, // ibmtss (C)
+  2005: 46, // go-tpm-tools
+  2006: 60, // go-tpm
+  2008: 46, // WolfTPM (bash)
+  2009: 90, // WolfTPM (C)
+};
